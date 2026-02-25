@@ -24,13 +24,11 @@ def main():
             print("Error: Failed to grab frame.")
             break
 
-        # Calculate timing and FPS
         current_time = time.time()
         fps = 1 / (current_time - prev_frame_time) if prev_frame_time > 0 else 0
         prev_frame_time = current_time
         timestamp_ms = int((current_time - start_time) * 1000)
 
-        # Prepare image for MediaPipe
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
@@ -38,21 +36,43 @@ def main():
         pose_result = engine.process_frame(mp_image, timestamp_ms)
 
         # 2. Process and Render Results
-        if pose_result.pose_landmarks:
-            landmarks = pose_result.pose_landmarks[0]
+        if pose_result.pose_landmarks and pose_result.pose_world_landmarks:
+            draw_landmarks = pose_result.pose_landmarks[0]
+            world_landmarks = pose_result.pose_world_landmarks[0]
 
-            # Draw skeleton and extract points
-            ear, shoulder, hip = ui_renderer.draw_skeleton(frame, landmarks)
+            # --- DYNAMIC SIDE SELECTION ---
+            if draw_landmarks[11].visibility > draw_landmarks[12].visibility:
+                indices = (7, 11, 23)
+                active_side = "LEFT"
+            else:
+                indices = (8, 12, 24)
+                active_side = "RIGHT"
 
-            # Calculate angle
-            posture_angle = math_utils.calculate_angle(ear, shoulder, hip)
+            ear_idx, shoulder_idx, hip_idx = indices
 
-            # Draw UI
-            ui_renderer.draw_status(frame, posture_angle, fps, pose_detected=True)
+            ui_renderer.draw_skeleton(frame, draw_landmarks, indices)
+
+            # Extract 3D points
+            ear_3d = (world_landmarks[ear_idx].x, world_landmarks[ear_idx].y, world_landmarks[ear_idx].z)
+            shoulder_3d = (
+            world_landmarks[shoulder_idx].x, world_landmarks[shoulder_idx].y, world_landmarks[shoulder_idx].z)
+            hip_3d = (world_landmarks[hip_idx].x, world_landmarks[hip_idx].y, world_landmarks[hip_idx].z)
+
+            # Create a virtual vertical point 1 meter above the hip
+            # (MediaPipe Y is positive downward, so subtract to go up)
+            vertical_ref_3d = (hip_3d[0], hip_3d[1] - 1.0, hip_3d[2])
+
+            # --- DUAL-METRIC CALCULATION ---
+            # Neck Angle (Angle at shoulder between Ear and Hip)
+            neck_angle = math_utils.calculate_angle_3d(ear_3d, shoulder_3d, hip_3d)
+
+            # Torso Lean (Angle at Hip between Shoulder and Vertical Reference)
+            torso_angle = math_utils.calculate_angle_3d(shoulder_3d, hip_3d, vertical_ref_3d)
+
+            ui_renderer.draw_status(frame, neck_angle, torso_angle, fps, pose_detected=True, active_side=active_side)
         else:
-            ui_renderer.draw_status(frame, 0, fps, pose_detected=False)
+            ui_renderer.draw_status(frame, 0, 0, fps, pose_detected=False)
 
-        # 3. Display Output
         cv2.imshow('Distributed Ergonomic Evaluator - Live Feed', frame)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):

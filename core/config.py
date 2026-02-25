@@ -13,5 +13,5 @@ MIN_POSE_PRESENCE_CONFIDENCE = 0.6
 MIN_TRACKING_CONFIDENCE = 0.6
 
 # --- Ergonomic Thresholds ---
-# Currently a static threshold; will be updated to dynamic in Phase 4
-GOOD_POSTURE_THRESHOLD = 150
+GOOD_NECK_THRESHOLD = 140  # Must be greater than this (closer to 180 is straight)
+GOOD_TORSO_THRESHOLD = 15   # Must be less than this (closer to 0 is vertical)
