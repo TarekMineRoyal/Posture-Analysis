@@ -1,60 +1,39 @@
-"""Handles OpenCV drawing and UI overlays."""
+"""Handles OpenCV drawing and UI overlays for Biomechanical data."""
 import cv2
-from core import config
 
-def draw_skeleton(frame, landmarks, indices):
-    """Draws nodes and connections for the dynamically selected side."""
-    h, w, _ = frame.shape
-    ear_idx, shoulder_idx, hip_idx = indices
+def draw_status(frame, neck, mid, low, fps, pose_detected=True, is_bad=False, alarm_active=False):
+    """Overlays the biomechanical spinal curvature data onto the frame."""
 
-    ear = (int(landmarks[ear_idx].x * w), int(landmarks[ear_idx].y * h))
-    shoulder = (int(landmarks[shoulder_idx].x * w), int(landmarks[shoulder_idx].y * h))
-    hip = (int(landmarks[hip_idx].x * w), int(landmarks[hip_idx].y * h))
+    # Draw a dark, semi-transparent background panel
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (480, 250), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
 
-    # Draw pure vertical reference line from hip (for visual reference only)
-    vertical_ref = (hip[0], hip[1] - 150) # Just extending 150 pixels up
-    cv2.line(frame, hip, vertical_ref, (255, 255, 255), 2, lineType=cv2.LINE_AA)
-
-    # Draw nodes
-    cv2.circle(frame, ear, 8, (0, 255, 0), -1)
-    cv2.circle(frame, shoulder, 8, (0, 255, 0), -1)
-    cv2.circle(frame, hip, 8, (0, 255, 0), -1)
-
-    # Draw vectors
-    cv2.line(frame, ear, shoulder, (255, 255, 0), 3)
-    cv2.line(frame, shoulder, hip, (255, 255, 0), 3)
-
-def draw_status(frame, neck_angle, torso_angle, fps, pose_detected=True, active_side="NONE"):
-    """Overlays the angles, ergonomic status, active side, and FPS."""
-    cv2.putText(frame, f"FPS: {int(fps)} | Side: {active_side}", (15, 35),
+    # Base FPS Display
+    cv2.putText(frame, f"System FPS: {int(fps)}", (15, 35),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
     if pose_detected:
-        # Evaluate Neck
-        neck_good = neck_angle > config.GOOD_NECK_THRESHOLD
-        neck_color = (0, 255, 0) if neck_good else (0, 0, 255)
-        neck_status = "OK" if neck_good else "TEXT NECK"
+        status_color = (0, 0, 255) if is_bad else (0, 255, 0)
 
-        # Evaluate Torso
-        torso_good = torso_angle < config.GOOD_TORSO_THRESHOLD
-        torso_color = (0, 255, 0) if torso_good else (0, 0, 255)
-        torso_status = "OK" if torso_good else "LEANING"
-
-        # Overall Status
-        if neck_good and torso_good:
-            overall_status = "PERFECT POSTURE"
-            overall_color = (0, 255, 0)
+        # Override the status text if the alarm is actively ringing
+        if alarm_active:
+            status_text = "FIX YOUR POSTURE!"
+            status_color = (0, 165, 255) # Orange/Warning color
         else:
-            overall_status = "SLOUCHING"
-            overall_color = (0, 0, 255)
+            status_text = "SPINAL MISALIGNMENT" if is_bad else "HEALTHY S-CURVE"
 
-        # Draw UI Block
-        cv2.putText(frame, f"Neck: {int(neck_angle)} deg [{neck_status}]", (15, 85),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, neck_color, 2, cv2.LINE_AA)
-        cv2.putText(frame, f"Torso: {int(torso_angle)} deg [{torso_status}]", (15, 125),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, torso_color, 2, cv2.LINE_AA)
-        cv2.putText(frame, f"Status: {overall_status}", (15, 175),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, overall_color, 3, cv2.LINE_AA)
+        # Draw the Data Metrics
+        cv2.putText(frame, f"Neck Angle:  {neck:>5.1f} deg", (15, 85),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2, cv2.LINE_AA)
+        cv2.putText(frame, f"Mid Spine:   {mid:>5.1f} deg", (15, 125),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2, cv2.LINE_AA)
+        cv2.putText(frame, f"Lower Spine: {low:>5.1f} deg", (15, 165),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2, cv2.LINE_AA)
+
+        # Overall System Status
+        cv2.putText(frame, f"STATUS: {status_text}", (15, 220),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2, cv2.LINE_AA)
     else:
-        cv2.putText(frame, "Status: NO POSE DETECTED", (15, 85),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2, cv2.LINE_AA)
+        cv2.putText(frame, "STATUS: NO SUBJECT DETECTED", (15, 85),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2, cv2.LINE_AA)

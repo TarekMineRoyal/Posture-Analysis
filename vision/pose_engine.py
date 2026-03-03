@@ -1,37 +1,31 @@
-"""Handles the MediaPipe Pose Landmarker initialization and processing."""
-import os
-import urllib.request
-import mediapipe as mp
-from mediapipe.tasks.python import vision
-from mediapipe.tasks.python.core.base_options import BaseOptions
-from core import config
-
+"""Handles the 3D Human Mesh Recovery using ROMP."""
+import cv2
+import romp
 
 class PoseEngine:
     def __init__(self):
-        self._ensure_model_exists()
+        print("Initializing ROMP 3D Mesh Engine on RTX 3050...")
 
-        options = vision.PoseLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=config.MODEL_PATH),
-            running_mode=vision.RunningMode.VIDEO,
-            min_pose_detection_confidence=config.MIN_POSE_DETECTION_CONFIDENCE,
-            min_pose_presence_confidence=config.MIN_POSE_PRESENCE_CONFIDENCE,
-            min_tracking_confidence=config.MIN_TRACKING_CONFIDENCE
-        )
-        # Create the landmarker instance
-        self.landmarker = vision.PoseLandmarker.create_from_options(options)
+        # 1. Load the default ROMP configuration
+        self.settings = romp.main.default_settings
 
-    def _ensure_model_exists(self):
-        """Downloads the MediaPipe model if it doesn't exist locally."""
-        if not os.path.exists(config.MODEL_PATH):
-            print(f"Downloading Heavy MediaPipe model to {config.MODEL_PATH}...")
-            urllib.request.urlretrieve(config.MODEL_URL, config.MODEL_PATH)
-            print("Download complete.")
+        # 2. Optimize for real-time inference
+        self.settings.calc_smpl = True         # WE NEED THIS: Calculates joint rotations
+        self.settings.render_mesh = False      # Disable built-in rendering to save VRAM/time
+        self.settings.show_largest = True      # Only track the primary person (ignore people in background)
 
-    def process_frame(self, mp_image, timestamp_ms):
-        """Processes an image frame and returns the pose landmarks."""
-        return self.landmarker.detect_for_video(mp_image, timestamp_ms)
+        # 3. Spin up the neural network
+        self.model = romp.ROMP(self.settings)
+        print("ROMP Engine loaded successfully.")
+
+    def process_frame(self, bgr_frame):
+        """
+        Processes a standard OpenCV BGR frame.
+        Returns a dictionary containing the SMPL mesh data, or None if no person is found.
+        """
+        outputs = self.model(bgr_frame)
+        return outputs
 
     def close(self):
-        """Cleans up the MediaPipe resources."""
-        self.landmarker.close()
+        """No strict cleanup required for ROMP, but keeps our API consistent."""
+        pass

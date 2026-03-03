@@ -1,86 +1,98 @@
-"""Main entry point for the Distributed Ergonomic Evaluator."""
 import cv2
 import time
-import mediapipe as mp
+import winsound
+import threading
+from collections import deque
 
 from core import config, math_utils
+from core.calibration import CalibrationManager
 from vision.pose_engine import PoseEngine
 from vision import ui_renderer
+
+
+# Background function to play the beep without pausing the video feed
+# We use a raw string (r"") so Windows backslashes don't break the path
+ALARM_PATH = r"D:\DEV\Python\Posture_Evaluator\alarm.wav"
+
+def play_alarm_sound():
+    # SND_ASYNC: Play in background
+    # SND_FILENAME: Treat the string as a file path
+    # SND_NODEFAULT: Fail silently if the file is missing (don't play the Windows Ding)
+    flags = winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT
+    winsound.PlaySound(ALARM_PATH, flags)
 
 
 def main():
     print(f"Connecting to Edge Sensor at: {config.STREAM_URL}...")
     cap = cv2.VideoCapture(config.STREAM_URL)
-
-    # Initialize our custom MediaPipe wrapper
     engine = PoseEngine()
+    calibrator = CalibrationManager(target_samples=20)
 
     prev_frame_time = 0
-    start_time = time.time()
+    last_beep_time = 0
+
+    # --- ROLLING WINDOW SETUP ---
+    # A queue that holds exactly 15 frames. Oldest frame drops off automatically.
+    posture_history = deque(maxlen=15)
+
+    print("SYSTEM START: Please sit in your HEALTHY pose for calibration...")
 
     while True:
         success, frame = cap.read()
-        if not success:
-            print("Error: Failed to grab frame.")
-            break
+        if not success: break
 
         current_time = time.time()
         fps = 1 / (current_time - prev_frame_time) if prev_frame_time > 0 else 0
         prev_frame_time = current_time
-        timestamp_ms = int((current_time - start_time) * 1000)
 
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+        outputs = engine.process_frame(frame)
+        is_bad = False
+        alarm_active = False
 
-        # 1. Detect Poses
-        pose_result = engine.process_frame(mp_image, timestamp_ms)
+        if outputs is not None and 'joints' in outputs:
+            neck, mid, low = math_utils.evaluate_spine(outputs['joints'])
 
-        # 2. Process and Render Results
-        if pose_result.pose_landmarks and pose_result.pose_world_landmarks:
-            draw_landmarks = pose_result.pose_landmarks[0]
-            world_landmarks = pose_result.pose_world_landmarks[0]
+            if not calibrator.is_calibrated:
+                progress = calibrator.collect_sample(neck, mid, low)
+                cv2.rectangle(frame, (50, 400), (450, 430), (50, 50, 50), -1)
+                cv2.rectangle(frame, (50, 400), (50 + int(400 * progress), 430), (0, 255, 255), -1)
+                cv2.putText(frame, f"CALIBRATING... {int(progress * 100)}%", (60, 390),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
-            # --- DYNAMIC SIDE SELECTION ---
-            if draw_landmarks[11].visibility > draw_landmarks[12].visibility:
-                indices = (7, 11, 23)
-                active_side = "LEFT"
+                ui_renderer.draw_status(frame, neck, mid, low, fps, pose_detected=True)
             else:
-                indices = (8, 12, 24)
-                active_side = "RIGHT"
+                d_neck, d_mid, d_low = calibrator.get_deltas(neck, mid, low)
 
-            ear_idx, shoulder_idx, hip_idx = indices
+                # Check if this specific frame is bad
+                is_bad = (abs(d_neck) > 4.0) or (abs(d_mid) > 4.0) or (abs(d_low) > 6.0)
 
-            ui_renderer.draw_skeleton(frame, draw_landmarks, indices)
+                # Push the current frame's status into the rolling window
+                posture_history.append(is_bad)
 
-            # Extract 3D points
-            ear_3d = (world_landmarks[ear_idx].x, world_landmarks[ear_idx].y, world_landmarks[ear_idx].z)
-            shoulder_3d = (
-            world_landmarks[shoulder_idx].x, world_landmarks[shoulder_idx].y, world_landmarks[shoulder_idx].z)
-            hip_3d = (world_landmarks[hip_idx].x, world_landmarks[hip_idx].y, world_landmarks[hip_idx].z)
+                # --- ALARM LOGIC ---
+                # Count how many 'True' (bad) frames are in the last 15
+                bad_frame_count = posture_history.count(True)
 
-            # Create a virtual vertical point 1 meter above the hip
-            # (MediaPipe Y is positive downward, so subtract to go up)
-            vertical_ref_3d = (hip_3d[0], hip_3d[1] - 1.0, hip_3d[2])
+                if bad_frame_count >= 8:
+                    alarm_active = True
+                    # Only trigger the file once every 2 seconds
+                    if current_time - last_beep_time > 2.0:
+                        play_alarm_sound()  # No threading needed thanks to SND_ASYNC!
+                        last_beep_time = current_time
 
-            # --- DUAL-METRIC CALCULATION ---
-            # Neck Angle (Angle at shoulder between Ear and Hip)
-            neck_angle = math_utils.calculate_angle_3d(ear_3d, shoulder_3d, hip_3d)
-
-            # Torso Lean (Angle at Hip between Shoulder and Vertical Reference)
-            torso_angle = math_utils.calculate_angle_3d(shoulder_3d, hip_3d, vertical_ref_3d)
-
-            ui_renderer.draw_status(frame, neck_angle, torso_angle, fps, pose_detected=True, active_side=active_side)
+                ui_renderer.draw_status(frame, neck, mid, low, fps,
+                                        pose_detected=True,
+                                        is_bad=is_bad,
+                                        alarm_active=alarm_active)
         else:
-            ui_renderer.draw_status(frame, 0, 0, fps, pose_detected=False)
+            ui_renderer.draw_status(frame, 0, 0, 0, fps, pose_detected=False)
 
-        cv2.imshow('Distributed Ergonomic Evaluator - Live Feed', frame)
+        cv2.imshow('Biomechanical Ergonomic Evaluator', frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'): break
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        time.sleep(max(0, 0.2 - (time.time() - current_time)))
 
-    # Cleanup
     cap.release()
-    engine.close()
     cv2.destroyAllWindows()
 
 
